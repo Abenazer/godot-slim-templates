@@ -206,6 +206,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          # Maven Central rate-limits (HTTP 429); cached dependencies avoid it.
+          cache: gradle
+          cache-dependency-path: platform/android/java/**/*.gradle*
       - uses: ./.github/actions/godot-cache-restore
         with:
           cache-name: android-${{ inputs.godot_tag }}
@@ -229,7 +232,12 @@ jobs:
       - name: Generate the AAR
         run: |
           cd platform/android/java
-          ./gradlew generateGodotTemplates
+          # Retried: a cold dependency cache can still meet a 429.
+          for attempt in 1 2 3; do
+            ./gradlew generateGodotTemplates && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 60))
+          done
           cd ../../..
           mkdir out
           cp bin/godot-lib.template_release.aar out/
