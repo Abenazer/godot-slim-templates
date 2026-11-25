@@ -1,0 +1,258 @@
+name: Build slim templates
+
+# Builds release export templates for Linux, Windows, macOS (universal) and
+# Android (arm64) from an exact Godot tag with slim.py, and publishes them as
+# one GitHub Release with a SHA256SUMS file. Debug templates are not built:
+# debug exports keep using the stock ones.
+#
+# Godot is checked out at the workspace root, so its own composite actions
+# (.github/actions/godot-*) are used exactly as they are at that tag; this
+# repo is checked out into slim/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      godot_tag:
+        description: Godot tag to build (must match the editor exactly)
+        default: 4.7.2-stable
+        required: true
+      release_tag:
+        description: Release to publish, e.g. 4.7.2-stable-slim.1
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  SLIM_FLAGS: profile=slim/slim.py
+  # Same toolchain line as the official 4.7 Linux templates: glibc 2.28 floor.
+  BUILDROOT_TAG: godot-2023.08.x-4
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: godotengine/godot
+          ref: ${{ inputs.godot_tag }}
+      - uses: actions/checkout@v7
+        with:
+          path: slim
+
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: linux-${{ inputs.godot_tag }}
+        continue-on-error: true
+      - uses: ./.github/actions/godot-deps
+
+      - name: Install the Godot buildroot toolchain
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o sdk.tar.bz2 \
+            "https://github.com/godotengine/buildroot/releases/download/$BUILDROOT_TAG/x86_64-godot-linux-gnu_sdk-buildroot.tar.bz2"
+          tar xjf sdk.tar.bz2
+          cd x86_64-godot-linux-gnu_sdk-buildroot
+          ./relocate-sdk.sh
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+      - name: Download AccessKit
+        run: python misc/scripts/install_accesskit.py
+
+      - uses: ./.github/actions/godot-build
+        with:
+          platform: linuxbsd
+          target: template_release
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=x86_64 accesskit=yes
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: linux-${{ inputs.godot_tag }}
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          mkdir out
+          cp bin/godot.linuxbsd.template_release.x86_64 out/linux_release.x86_64
+          strip out/linux_release.x86_64
+          echo "glibc floor: $(objdump -T out/linux_release.x86_64 | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: out/*
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: godotengine/godot
+          ref: ${{ inputs.godot_tag }}
+      - uses: actions/checkout@v7
+        with:
+          path: slim
+
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: windows-${{ inputs.godot_tag }}
+        continue-on-error: true
+      - uses: ./.github/actions/godot-deps
+
+      - name: Download ANGLE, WinRT and AccessKit
+        run: |
+          python ./misc/scripts/install_angle.py
+          python ./misc/scripts/install_winrt.py
+          python ./misc/scripts/install_accesskit.py
+
+      - uses: ./.github/actions/godot-build
+        with:
+          platform: windows
+          target: template_release
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=x86_64 d3d12=no angle=yes accesskit=yes
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: windows-${{ inputs.godot_tag }}
+        continue-on-error: true
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir out
+          cp bin/godot.windows.template_release.x86_64.exe out/windows_release_x86_64.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: out/*
+
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: godotengine/godot
+          ref: ${{ inputs.godot_tag }}
+      - uses: actions/checkout@v7
+        with:
+          path: slim
+
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: macos-${{ inputs.godot_tag }}
+        continue-on-error: true
+      - uses: ./.github/actions/godot-deps
+
+      - name: Download ANGLE, AccessKit and the Vulkan SDK
+        run: |
+          python ./misc/scripts/install_angle.py
+          python3 ./misc/scripts/install_accesskit.py
+          sh misc/scripts/install_vulkan_sdk_macos.sh
+
+      - name: Compile (x86_64)
+        uses: ./.github/actions/godot-build
+        with:
+          platform: macos
+          target: template_release
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=x86_64 vulkan=yes angle=yes accesskit=yes
+      - name: Compile (arm64)
+        uses: ./.github/actions/godot-build
+        with:
+          platform: macos
+          target: template_release
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=arm64 vulkan=yes metal=yes angle=yes accesskit=yes
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: macos-${{ inputs.godot_tag }}
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          mkdir out
+          cp -R misc/dist/macos_template.app out/
+          mkdir -p out/macos_template.app/Contents/MacOS
+          lipo -create bin/godot.macos.template_release.x86_64 bin/godot.macos.template_release.arm64 \
+            -output out/macos_template.app/Contents/MacOS/godot_macos_release.universal
+          strip out/macos_template.app/Contents/MacOS/godot_macos_release.universal
+          chmod +x out/macos_template.app/Contents/MacOS/godot_macos_release.universal
+          cd out && zip -q -9 -r macos.zip macos_template.app && rm -rf macos_template.app
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: out/*
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: godotengine/godot
+          ref: ${{ inputs.godot_tag }}
+      - uses: actions/checkout@v7
+        with:
+          path: slim
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: android-${{ inputs.godot_tag }}
+        continue-on-error: true
+      - uses: ./.github/actions/godot-deps
+
+      - name: Download Swappy
+        run: python ./misc/scripts/install_swappy_android.py
+
+      - uses: ./.github/actions/godot-build
+        with:
+          platform: android
+          target: template_release
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=arm64
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: android-${{ inputs.godot_tag }}
+        continue-on-error: true
+
+      - name: Generate the AAR
+        run: |
+          cd platform/android/java
+          ./gradlew generateGodotTemplates
+          cd ../../..
+          mkdir out
+          cp bin/godot-lib.template_release.aar out/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: out/*
+
+  release:
+    needs: [linux, windows, macos, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "${{ inputs.release_tag }}" * \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ inputs.release_tag }}" \
+            --notes "Release export templates built from Godot ${{ inputs.godot_tag }} with slim.py at ${{ github.sha }}."
