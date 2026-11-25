@@ -51,6 +51,11 @@ jobs:
         continue-on-error: true
       - uses: ./.github/actions/godot-deps
 
+      # Before the toolchain: its bin/ carries a python without SSL, which
+      # would shadow the runner's for every later step.
+      - name: Download AccessKit
+        run: python misc/scripts/install_accesskit.py
+
       - name: Install the Godot buildroot toolchain
         run: |
           cd "$RUNNER_TEMP"
@@ -60,8 +65,6 @@ jobs:
           cd x86_64-godot-linux-gnu_sdk-buildroot
           ./relocate-sdk.sh
           echo "$PWD/bin" >> "$GITHUB_PATH"
-      - name: Download AccessKit
-        run: python misc/scripts/install_accesskit.py
 
       - uses: ./.github/actions/godot-build
         with:
