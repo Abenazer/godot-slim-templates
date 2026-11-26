@@ -135,6 +135,10 @@ jobs:
 
   macos:
     runs-on: macos-26
+    env:
+      # ANGLE is linked statically on macOS (a DLL on Windows) and needs the
+      # astcenc module's symbols, which slim.py otherwise leaves out.
+      MACOS_FLAGS: module_astcenc_enabled=yes
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
@@ -162,13 +166,13 @@ jobs:
         with:
           platform: macos
           target: template_release
-          scons-flags: ${{ env.SLIM_FLAGS }} arch=x86_64 vulkan=yes angle=yes accesskit=yes
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=x86_64 vulkan=yes angle=yes accesskit=yes ${{ env.MACOS_FLAGS }}
       - name: Compile (arm64)
         uses: ./.github/actions/godot-build
         with:
           platform: macos
           target: template_release
-          scons-flags: ${{ env.SLIM_FLAGS }} arch=arm64 vulkan=yes metal=yes angle=yes accesskit=yes
+          scons-flags: ${{ env.SLIM_FLAGS }} arch=arm64 vulkan=yes metal=yes angle=yes accesskit=yes ${{ env.MACOS_FLAGS }}
 
       - uses: ./.github/actions/godot-cache-save
         with:
